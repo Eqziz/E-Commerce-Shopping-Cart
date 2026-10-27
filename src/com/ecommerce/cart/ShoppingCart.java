@@ -2,6 +2,9 @@ package com.ecommerce.cart;
 
 import com.ecommerce.model.BaseProduct;
 import com.ecommerce.model.CartItem;
+import com.ecommerce.strategy.DiscountResult;
+import com.ecommerce.strategy.DiscountStrategy;
+import com.ecommerce.strategy.NoDiscountStrategy;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -11,7 +14,7 @@ import java.util.Map;
 
 /**
  * Core Shopping Cart container managing client item selections, line-item quantities,
- * and base price computations prior to discounts and checkout decorators.
+ * dynamic discount strategies, and base price computations.
  * 
  * @author Eqziz
  */
@@ -19,6 +22,7 @@ public class ShoppingCart {
     private final String cartId;
     private final String customerId;
     private final Map<String, CartItem> items;
+    private DiscountStrategy discountStrategy;
 
     public ShoppingCart(String cartId, String customerId) {
         if (cartId == null || cartId.isBlank()) {
@@ -27,6 +31,7 @@ public class ShoppingCart {
         this.cartId = cartId;
         this.customerId = customerId;
         this.items = new LinkedHashMap<>();
+        this.discountStrategy = new NoDiscountStrategy();
     }
 
     public String getCartId() {
@@ -35,6 +40,14 @@ public class ShoppingCart {
 
     public String getCustomerId() {
         return customerId;
+    }
+
+    public DiscountStrategy getDiscountStrategy() {
+        return discountStrategy;
+    }
+
+    public void setDiscountStrategy(DiscountStrategy discountStrategy) {
+        this.discountStrategy = discountStrategy != null ? discountStrategy : new NoDiscountStrategy();
     }
 
     public void addItem(BaseProduct product, int quantity) {
@@ -89,6 +102,11 @@ public class ShoppingCart {
         return Math.round(subtotal * 100.0) / 100.0;
     }
 
+    public DiscountResult applyCurrentDiscount(String customerTier) {
+        double subtotal = calculateSubtotal();
+        return discountStrategy.applyDiscount(subtotal, getItems(), customerTier);
+    }
+
     public void printCartSummary() {
         System.out.println("================================================================================");
         System.out.printf("SHOPPING CART [#%s] - Customer: %s%n", cartId, customerId != null ? customerId : "Guest");
@@ -106,7 +124,13 @@ public class ShoppingCart {
                         item.getSubtotal());
             }
             System.out.println("--------------------------------------------------------------------------------");
-            System.out.printf("  Total Items: %d | Base Cart Subtotal: $%.2f%n", getItemCount(), calculateSubtotal());
+            double subtotal = calculateSubtotal();
+            System.out.printf("  Total Items: %d | Base Cart Subtotal: $%.2f%n", getItemCount(), subtotal);
+            if (!(discountStrategy instanceof NoDiscountStrategy)) {
+                DiscountResult dr = applyCurrentDiscount("STANDARD");
+                System.out.printf("  Active Strategy: %s | Estimated Savings: -$%.2f | Net: $%.2f%n",
+                        dr.getStrategyName(), dr.getDiscountAmount(), dr.getDiscountedTotal());
+            }
         }
         System.out.println("================================================================================");
     }
