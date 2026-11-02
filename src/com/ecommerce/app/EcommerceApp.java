@@ -8,15 +8,22 @@ import com.ecommerce.builder.CustomProduct;
 import com.ecommerce.builder.CustomProductBuilder;
 import com.ecommerce.builder.ProductDirector;
 import com.ecommerce.cart.ShoppingCart;
+import com.ecommerce.decorator.ExpressShippingDecorator;
+import com.ecommerce.decorator.ExtendedWarrantyDecorator;
+import com.ecommerce.decorator.FragileHandlingDecorator;
+import com.ecommerce.decorator.GiftWrapDecorator;
 import com.ecommerce.decorator.OrderItem;
+import com.ecommerce.decorator.StandardOrderItem;
 import com.ecommerce.facade.CheckoutFacade;
 import com.ecommerce.factory.ProductCatalogRegistry;
 import com.ecommerce.model.BaseProduct;
+import com.ecommerce.model.CartItem;
 import com.ecommerce.model.Customer;
 import com.ecommerce.model.Order;
 import com.ecommerce.model.ProductType;
 import com.ecommerce.observer.AnalyticsAuditObserver;
 import com.ecommerce.observer.CustomerAlertObserver;
+import com.ecommerce.observer.EcommerceEvent;
 import com.ecommerce.observer.InventorySubject;
 import com.ecommerce.observer.WarehouseInventoryObserver;
 
@@ -32,6 +39,7 @@ import java.util.UUID;
  * 
  * @author Eqziz (Team Lead)
  * @author AinurSarsenbai (Catalog & Builder Integration)
+ * @author baktiyarovamereilim-lang (Cart, Decorator & Observer Integration)
  */
 public class EcommerceApp {
     private final ProductCatalogRegistry catalogRegistry;
@@ -131,11 +139,11 @@ public class EcommerceApp {
             switch (choice) {
                 case 1 -> handleBrowseCatalog();
                 case 2 -> handleBuildCustomProduct();
-                case 3 -> System.out.println("Cart management...");
-                case 4 -> System.out.println("Decorator selection...");
+                case 3 -> handleViewCart();
+                case 4 -> handleConfigureDecorators();
                 case 5 -> System.out.println("Checkout execution...");
-                case 6 -> System.out.println("Observer live status...");
-                case 7 -> System.out.println("System audit log...");
+                case 6 -> handleViewObserverStream();
+                case 7 -> handleViewAuditLog();
                 case 8 -> {
                     System.out.println("Exiting E-Commerce Shopping Cart System. Goodbye.");
                     exit = true;
@@ -215,7 +223,6 @@ public class EcommerceApp {
         if (builtProduct != null) {
             ConsoleUiHelper.printSubHeader("Custom Build Summary");
             System.out.println(builtProduct);
-            // Register into inventory with initial custom unit
             registerCatalogItem(builtProduct, 3);
 
             boolean addToCart = ConsoleUiHelper.promptBoolean("Add this custom build to your shopping cart?");
@@ -234,9 +241,8 @@ public class EcommerceApp {
                 .setId(customSku)
                 .setName(name)
                 .setProductType(ProductType.CUSTOM_HARDWARE)
-                .setBasePrice(350.00); // Base chassis and motherboard
+                .setBasePrice(350.00);
 
-        // Processor
         System.out.println("Select Processor (CPU):");
         System.out.println("  1. AMD Ryzen 5 7600 (+$220.00)");
         System.out.println("  2. AMD Ryzen 7 7800X3D (+$380.00)");
@@ -248,7 +254,6 @@ public class EcommerceApp {
             case 3 -> customProductBuilder.setProcessor("Intel Core i9-14900K 24-Core", 540.00);
         }
 
-        // Memory RAM
         System.out.println("Select Memory (RAM):");
         System.out.println("  1. 16GB DDR5 5600MHz (+$75.00)");
         System.out.println("  2. 32GB DDR5 6000MHz RGB (+$130.00)");
@@ -260,7 +265,6 @@ public class EcommerceApp {
             case 3 -> customProductBuilder.setMemoryRam("64GB DDR5-6400MHz Low-Latency", 240.00);
         }
 
-        // Graphics Card (GPU)
         System.out.println("Select Graphics Card (GPU):");
         System.out.println("  1. NVIDIA GeForce RTX 4060 8GB (+$299.00)");
         System.out.println("  2. NVIDIA GeForce RTX 4070 Ti Super 16GB (+$799.00)");
@@ -272,7 +276,6 @@ public class EcommerceApp {
             case 3 -> customProductBuilder.setGraphicsCard("NVIDIA GeForce RTX 4090 24GB", 1699.00);
         }
 
-        // Storage
         System.out.println("Select NVMe SSD Storage:");
         System.out.println("  1. 1TB Gen4 NVMe SSD (+$85.00)");
         System.out.println("  2. 2TB Samsung 990 Pro Gen4 SSD (+$175.00)");
@@ -284,10 +287,8 @@ public class EcommerceApp {
             case 3 -> customProductBuilder.setStorage("4TB High-Speed Enterprise SSD", 320.00);
         }
 
-        // Power Supply
         customProductBuilder.setPowerSupply("850W 80+ Gold Fully Modular", 135.00);
 
-        // Operating System
         System.out.println("Select Operating System:");
         System.out.println("  1. Windows 11 Home (+$119.00)");
         System.out.println("  2. Windows 11 Pro (+$159.00)");
@@ -299,9 +300,158 @@ public class EcommerceApp {
             case 3 -> customProductBuilder.setOperatingSystem("Ubuntu Linux 24.04 LTS", 0.00);
         }
 
-        // Packaging
         customProductBuilder.setPackagingType("Reinforced Custom Wooden Crate", 40.00);
-
         return customProductBuilder.build();
+    }
+
+    private void handleViewCart() {
+        shoppingCart.printCartSummary();
+        if (shoppingCart.isEmpty()) return;
+
+        System.out.println("Options:");
+        System.out.println("  1. Update Item Quantity");
+        System.out.println("  2. Remove Item from Cart");
+        System.out.println("  3. Clear Entire Cart");
+        System.out.println("  0. Back to Main Menu");
+
+        int choice = ConsoleUiHelper.promptInt("Select action", 0, 3);
+        switch (choice) {
+            case 1 -> {
+                List<CartItem> items = shoppingCart.getItems();
+                int itemIdx = ConsoleUiHelper.promptInt("Select item index", 1, items.size());
+                CartItem item = items.get(itemIdx - 1);
+                int newQty = ConsoleUiHelper.promptInt("Enter new quantity (0 to remove)", 0, 50);
+                shoppingCart.updateQuantity(item.getProduct().getId(), newQty);
+                System.out.println("Cart updated successfully.");
+            }
+            case 2 -> {
+                List<CartItem> items = shoppingCart.getItems();
+                int itemIdx = ConsoleUiHelper.promptInt("Select item index to remove", 1, items.size());
+                CartItem item = items.get(itemIdx - 1);
+                shoppingCart.removeItem(item.getProduct().getId());
+                System.out.printf("Removed %s from cart.%n", item.getProduct().getName());
+            }
+            case 3 -> {
+                shoppingCart.clear();
+                System.out.println("Shopping cart cleared.");
+            }
+        }
+    }
+
+    private void handleConfigureDecorators() {
+        ConsoleUiHelper.printHeader("Value-Added Service Decorator Configuration");
+        if (shoppingCart.isEmpty()) {
+            System.out.println("Your cart is empty. Add items before configuring decorators.");
+            return;
+        }
+
+        List<CartItem> items = shoppingCart.getItems();
+        System.out.println("Select a cart line item to decorate:");
+        for (int i = 0; i < items.size(); i++) {
+            CartItem ci = items.get(i);
+            System.out.printf("  %d. %s (Qty: %d) - Subtotal: $%.2f%n",
+                    i + 1, ci.getProduct().getName(), ci.getQuantity(), ci.getSubtotal());
+        }
+        System.out.println("  0. Finish & Return");
+
+        int selection = ConsoleUiHelper.promptInt("Select item", 0, items.size());
+        if (selection == 0) return;
+
+        CartItem target = items.get(selection - 1);
+        OrderItem currentDecorator = new StandardOrderItem(target);
+
+        boolean decorating = true;
+        while (decorating) {
+            ConsoleUiHelper.printSubHeader("Current Item State");
+            System.out.println("  " + currentDecorator);
+            System.out.println("Add a Decorator Service:");
+            System.out.println("  1. Gift Wrapping with Greeting Card (+$4.99/unit)");
+            System.out.println("  2. 24-Month Extended Warranty (10% of base price)");
+            System.out.println("  3. Priority Air Express Delivery (+$15.00 flat)");
+            System.out.println("  4. Fragile Shock-Proof Protective Handling (+$10.00 flat)");
+            System.out.println("  5. Save & Apply Decorated Line Item");
+            System.out.println("  0. Cancel Decorating");
+
+            int opt = ConsoleUiHelper.promptInt("Select option", 0, 5);
+            switch (opt) {
+                case 1 -> {
+                    String msg = ConsoleUiHelper.promptString("Enter gift card greeting message", "Best wishes from Nodir!");
+                    currentDecorator = new GiftWrapDecorator(currentDecorator, msg);
+                    System.out.println("Gift wrap decorator attached.");
+                }
+                case 2 -> {
+                    currentDecorator = new ExtendedWarrantyDecorator(currentDecorator, 24, 0.10);
+                    System.out.println("Extended warranty decorator attached.");
+                }
+                case 3 -> {
+                    currentDecorator = new ExpressShippingDecorator(currentDecorator, 15.00);
+                    System.out.println("Express shipping decorator attached.");
+                }
+                case 4 -> {
+                    currentDecorator = new FragileHandlingDecorator(currentDecorator, 10.00);
+                    System.out.println("Fragile handling decorator attached.");
+                }
+                case 5 -> {
+                    configuredOrderItems.removeIf(oi -> oi.getItemId().equals(target.getProduct().getId()));
+                    configuredOrderItems.add(currentDecorator);
+                    System.out.println("Successfully saved decorated order item for checkout.");
+                    decorating = false;
+                }
+                case 0 -> decorating = false;
+            }
+        }
+    }
+
+    private void handleViewObserverStream() {
+        ConsoleUiHelper.printHeader("Observer Pattern - Real-Time Event Dispatch Monitor");
+        System.out.println("Active Observers attached to InventorySubject:");
+        System.out.println("  1. CustomerAlertObserver  [Recipient: alex@example.com / nodir@university.edu]");
+        System.out.println("  2. WarehouseInventoryObserver [Logistics Hub: TASHKENT-CENTRAL]");
+        System.out.println("  3. AnalyticsAuditObserver [System Audit Trail]");
+        ConsoleUiHelper.printThinDivider();
+
+        System.out.println("Simulate Live Store State Mutations:");
+        System.out.println("  1. Trigger Price Drop Alert (broadcast to customers)");
+        System.out.println("  2. Trigger Low-Stock Depletion (dispatch warehouse replenishment PO)");
+        System.out.println("  3. Restock Product (broadcast back-in-stock notifications)");
+        System.out.println("  0. Back to Main Menu");
+
+        int choice = ConsoleUiHelper.promptInt("Select action", 0, 3);
+        switch (choice) {
+            case 1 -> {
+                String id = "EL-101";
+                BaseProduct p = inventorySubject.getProduct(id);
+                double currentPrice = p.getPrice();
+                double dropPrice = Math.round(currentPrice * 0.85 * 100.0) / 100.0;
+                System.out.printf("Dropping %s price from $%.2f to $%.2f...%n", p.getName(), currentPrice, dropPrice);
+                inventorySubject.updateProductPrice(id, dropPrice);
+            }
+            case 2 -> {
+                String id = "EL-102";
+                BaseProduct p = inventorySubject.getProduct(id);
+                System.out.printf("Depleting stock for %s to 2 units (triggers low stock PO)...%n", p.getName());
+                inventorySubject.updateStock(id, 2);
+            }
+            case 3 -> {
+                String id = "EL-102";
+                BaseProduct p = inventorySubject.getProduct(id);
+                System.out.printf("Restocking %s with 15 fresh units...%n", p.getName());
+                inventorySubject.updateStock(id, 15);
+            }
+        }
+    }
+
+    private void handleViewAuditLog() {
+        ConsoleUiHelper.printHeader("Analytics & Audit Trail - Observer Event Log");
+        List<EcommerceEvent> log = auditObserver.getAuditLog();
+        if (log.isEmpty()) {
+            System.out.println("No store events recorded in this session yet.");
+        } else {
+            System.out.printf("Total Recorded Audit Events: %d%n", log.size());
+            ConsoleUiHelper.printThinDivider();
+            for (int i = 0; i < log.size(); i++) {
+                System.out.printf("%2d. %s%n", i + 1, log.get(i));
+            }
+        }
     }
 }
