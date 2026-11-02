@@ -19,23 +19,19 @@ import com.ecommerce.observer.AnalyticsAuditObserver;
 import com.ecommerce.observer.CustomerAlertObserver;
 import com.ecommerce.observer.InventorySubject;
 import com.ecommerce.observer.WarehouseInventoryObserver;
-import com.ecommerce.strategy.BuyOneGetOneDiscountStrategy;
-import com.ecommerce.strategy.DiscountStrategy;
-import com.ecommerce.strategy.FlatRateDiscountStrategy;
-import com.ecommerce.strategy.NoDiscountStrategy;
-import com.ecommerce.strategy.PercentageDiscountStrategy;
-import com.ecommerce.strategy.TieredLoyaltyDiscountStrategy;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Main Interactive Console CLI Application for the E-Commerce Shopping Cart System.
  * Coordinates all 7 classical design patterns within a unified, interactive terminal interface.
  * 
  * @author Eqziz (Team Lead)
+ * @author AinurSarsenbai (Catalog & Builder Integration)
  */
 public class EcommerceApp {
     private final ProductCatalogRegistry catalogRegistry;
@@ -46,6 +42,7 @@ public class EcommerceApp {
     private final Customer currentCustomer;
     private final List<OrderItem> configuredOrderItems;
     private final List<Order> orderHistory;
+    private final List<BaseProduct> catalogItems;
 
     // Observers
     private final CustomerAlertObserver customerAlertObserver;
@@ -66,6 +63,7 @@ public class EcommerceApp {
                 "nodir@university.edu", "Tashkent, Universitet ko'chasi 4", "GOLD");
         this.configuredOrderItems = new ArrayList<>();
         this.orderHistory = new ArrayList<>();
+        this.catalogItems = new ArrayList<>();
 
         // Initialize Observers
         this.customerAlertObserver = new CustomerAlertObserver(currentCustomer.getId(),
@@ -110,14 +108,19 @@ public class EcommerceApp {
                 "All Products Pack", "1-Year JetBrains Developer License", 289.00,
                 Map.of("downloadUrl", "https://jetbrains.com/all", "licenseFormat", "ALL-PACK-2026"));
 
-        inventorySubject.registerProduct(phone, 8);
-        inventorySubject.registerProduct(laptop, 5);
-        inventorySubject.registerProduct(hoodie, 25);
-        inventorySubject.registerProduct(javaBook, 15);
-        inventorySubject.registerProduct(jetbrainsLicense, 9999);
+        registerCatalogItem(phone, 8);
+        registerCatalogItem(laptop, 5);
+        registerCatalogItem(hoodie, 25);
+        registerCatalogItem(javaBook, 15);
+        registerCatalogItem(jetbrainsLicense, 9999);
 
         // Subscribe current customer to phone price alerts
         customerAlertObserver.subscribeToProduct(phone.getId());
+    }
+
+    private void registerCatalogItem(BaseProduct product, int stock) {
+        catalogItems.add(product);
+        inventorySubject.registerProduct(product, stock);
     }
 
     public void run() {
@@ -126,8 +129,8 @@ public class EcommerceApp {
             printMainMenu();
             int choice = ConsoleUiHelper.promptInt("Select an option", 1, 8);
             switch (choice) {
-                case 1 -> System.out.println("Catalog viewing module...");
-                case 2 -> System.out.println("Custom builder wizard...");
+                case 1 -> handleBrowseCatalog();
+                case 2 -> handleBuildCustomProduct();
                 case 3 -> System.out.println("Cart management...");
                 case 4 -> System.out.println("Decorator selection...");
                 case 5 -> System.out.println("Checkout execution...");
@@ -157,8 +160,148 @@ public class EcommerceApp {
         ConsoleUiHelper.printThinDivider();
     }
 
-    public static void main(String[] args) {
-        EcommerceApp app = new EcommerceApp();
-        app.run();
+    private void handleBrowseCatalog() {
+        ConsoleUiHelper.printHeader("Product Catalog - Factory Method Architecture");
+        System.out.println("All items instantiated polymorphically through Category Factories:");
+        ConsoleUiHelper.printThinDivider();
+
+        for (int i = 0; i < catalogItems.size(); i++) {
+            BaseProduct p = catalogItems.get(i);
+            int stock = inventorySubject.getStock(p.getId());
+            System.out.printf("  %d. [%-11s] %-26s | SKU: %-6s | Price: $%7.2f | Stock: %d%n",
+                    i + 1, p.getProductType(), p.getName(), p.getId(), p.getPrice(), stock);
+            System.out.printf("      Details: %s%n", p.getDescription());
+        }
+        ConsoleUiHelper.printThinDivider();
+        System.out.printf("  0. Return to Main Menu%n");
+
+        int choice = ConsoleUiHelper.promptInt("Select a product to add to cart (or 0 to return)", 0, catalogItems.size());
+        if (choice == 0) return;
+
+        BaseProduct selected = catalogItems.get(choice - 1);
+        int availableStock = inventorySubject.getStock(selected.getId());
+        if (availableStock <= 0) {
+            System.out.println("Sorry, this item is currently out of stock.");
+            return;
+        }
+
+        int qty = ConsoleUiHelper.promptInt("Enter quantity", 1, availableStock);
+        shoppingCart.addItem(selected, qty);
+        System.out.printf("Added %d unit(s) of %s to your cart.%n", qty, selected.getName());
+    }
+
+    private void handleBuildCustomProduct() {
+        ConsoleUiHelper.printHeader("Custom Product Assembly - Builder Pattern");
+        System.out.println("1. Pre-configured Gaming Rig (Apex Titan Gaming PC)");
+        System.out.println("2. Pre-configured Student Workstation (EduPro Workstation)");
+        System.out.println("3. Pre-configured VIP Gift Hamper (Executive Tech Hamper)");
+        System.out.println("4. Bespoke Custom PC (Step-by-step Component Selection)");
+        System.out.println("0. Return to Main Menu");
+        ConsoleUiHelper.printThinDivider();
+
+        int choice = ConsoleUiHelper.promptInt("Select build option", 0, 4);
+        if (choice == 0) return;
+
+        CustomProduct builtProduct = null;
+        String customSku = "CUST-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+
+        switch (choice) {
+            case 1 -> builtProduct = productDirector.constructGamingPc(customProductBuilder, customSku);
+            case 2 -> builtProduct = productDirector.constructStudentWorkstation(customProductBuilder, customSku);
+            case 3 -> builtProduct = productDirector.constructLuxuryGiftBundle(customProductBuilder, customSku);
+            case 4 -> builtProduct = assembleBespokePc(customSku);
+        }
+
+        if (builtProduct != null) {
+            ConsoleUiHelper.printSubHeader("Custom Build Summary");
+            System.out.println(builtProduct);
+            // Register into inventory with initial custom unit
+            registerCatalogItem(builtProduct, 3);
+
+            boolean addToCart = ConsoleUiHelper.promptBoolean("Add this custom build to your shopping cart?");
+            if (addToCart) {
+                shoppingCart.addItem(builtProduct, 1);
+                System.out.println("Custom configuration added to shopping cart.");
+            }
+        }
+    }
+
+    private CustomProduct assembleBespokePc(String customSku) {
+        ConsoleUiHelper.printHeader("Bespoke PC Configuration Wizard");
+        String name = ConsoleUiHelper.promptString("Enter your custom PC build name", "Custom Power Rig");
+
+        customProductBuilder.reset()
+                .setId(customSku)
+                .setName(name)
+                .setProductType(ProductType.CUSTOM_HARDWARE)
+                .setBasePrice(350.00); // Base chassis and motherboard
+
+        // Processor
+        System.out.println("Select Processor (CPU):");
+        System.out.println("  1. AMD Ryzen 5 7600 (+$220.00)");
+        System.out.println("  2. AMD Ryzen 7 7800X3D (+$380.00)");
+        System.out.println("  3. Intel Core i9-14900K (+$540.00)");
+        int cpuChoice = ConsoleUiHelper.promptInt("CPU Choice", 1, 3);
+        switch (cpuChoice) {
+            case 1 -> customProductBuilder.setProcessor("AMD Ryzen 5 7600 6-Core", 220.00);
+            case 2 -> customProductBuilder.setProcessor("AMD Ryzen 7 7800X3D 8-Core V-Cache", 380.00);
+            case 3 -> customProductBuilder.setProcessor("Intel Core i9-14900K 24-Core", 540.00);
+        }
+
+        // Memory RAM
+        System.out.println("Select Memory (RAM):");
+        System.out.println("  1. 16GB DDR5 5600MHz (+$75.00)");
+        System.out.println("  2. 32GB DDR5 6000MHz RGB (+$130.00)");
+        System.out.println("  3. 64GB DDR5 6400MHz Low-Latency (+$240.00)");
+        int ramChoice = ConsoleUiHelper.promptInt("RAM Choice", 1, 3);
+        switch (ramChoice) {
+            case 1 -> customProductBuilder.setMemoryRam("16GB DDR5-5600MHz", 75.00);
+            case 2 -> customProductBuilder.setMemoryRam("32GB DDR5-6000MHz RGB", 130.00);
+            case 3 -> customProductBuilder.setMemoryRam("64GB DDR5-6400MHz Low-Latency", 240.00);
+        }
+
+        // Graphics Card (GPU)
+        System.out.println("Select Graphics Card (GPU):");
+        System.out.println("  1. NVIDIA GeForce RTX 4060 8GB (+$299.00)");
+        System.out.println("  2. NVIDIA GeForce RTX 4070 Ti Super 16GB (+$799.00)");
+        System.out.println("  3. NVIDIA GeForce RTX 4090 24GB (+$1699.00)");
+        int gpuChoice = ConsoleUiHelper.promptInt("GPU Choice", 1, 3);
+        switch (gpuChoice) {
+            case 1 -> customProductBuilder.setGraphicsCard("NVIDIA GeForce RTX 4060 8GB", 299.00);
+            case 2 -> customProductBuilder.setGraphicsCard("NVIDIA GeForce RTX 4070 Ti Super 16GB", 799.00);
+            case 3 -> customProductBuilder.setGraphicsCard("NVIDIA GeForce RTX 4090 24GB", 1699.00);
+        }
+
+        // Storage
+        System.out.println("Select NVMe SSD Storage:");
+        System.out.println("  1. 1TB Gen4 NVMe SSD (+$85.00)");
+        System.out.println("  2. 2TB Samsung 990 Pro Gen4 SSD (+$175.00)");
+        System.out.println("  3. 4TB High-Speed Enterprise SSD (+$320.00)");
+        int ssdChoice = ConsoleUiHelper.promptInt("Storage Choice", 1, 3);
+        switch (ssdChoice) {
+            case 1 -> customProductBuilder.setStorage("1TB Gen4 NVMe SSD", 85.00);
+            case 2 -> customProductBuilder.setStorage("2TB Samsung 990 Pro Gen4 SSD", 175.00);
+            case 3 -> customProductBuilder.setStorage("4TB High-Speed Enterprise SSD", 320.00);
+        }
+
+        // Power Supply
+        customProductBuilder.setPowerSupply("850W 80+ Gold Fully Modular", 135.00);
+
+        // Operating System
+        System.out.println("Select Operating System:");
+        System.out.println("  1. Windows 11 Home (+$119.00)");
+        System.out.println("  2. Windows 11 Pro (+$159.00)");
+        System.out.println("  3. Ubuntu Linux LTS (+$0.00)");
+        int osChoice = ConsoleUiHelper.promptInt("OS Choice", 1, 3);
+        switch (osChoice) {
+            case 1 -> customProductBuilder.setOperatingSystem("Windows 11 Home 64-Bit", 119.00);
+            case 2 -> customProductBuilder.setOperatingSystem("Windows 11 Pro 64-Bit", 159.00);
+            case 3 -> customProductBuilder.setOperatingSystem("Ubuntu Linux 24.04 LTS", 0.00);
+        }
+
+        // Packaging
+        customProductBuilder.setPackagingType("Reinforced Custom Wooden Crate", 40.00);
+
+        return customProductBuilder.build();
     }
 }
