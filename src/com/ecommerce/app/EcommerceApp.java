@@ -26,6 +26,12 @@ import com.ecommerce.observer.CustomerAlertObserver;
 import com.ecommerce.observer.EcommerceEvent;
 import com.ecommerce.observer.InventorySubject;
 import com.ecommerce.observer.WarehouseInventoryObserver;
+import com.ecommerce.strategy.BuyOneGetOneDiscountStrategy;
+import com.ecommerce.strategy.DiscountStrategy;
+import com.ecommerce.strategy.FlatRateDiscountStrategy;
+import com.ecommerce.strategy.NoDiscountStrategy;
+import com.ecommerce.strategy.PercentageDiscountStrategy;
+import com.ecommerce.strategy.TieredLoyaltyDiscountStrategy;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -38,7 +44,7 @@ import java.util.UUID;
  * Coordinates all 7 classical design patterns within a unified, interactive terminal interface.
  * 
  * @author Eqziz (Team Lead)
- * @author AinurSarsenbai (Catalog & Builder Integration)
+ * @author AinurSarsenbai (Catalog, Builder, Facade & Adapter Integration)
  * @author baktiyarovamereilim-lang (Cart, Decorator & Observer Integration)
  */
 public class EcommerceApp {
@@ -141,7 +147,7 @@ public class EcommerceApp {
                 case 2 -> handleBuildCustomProduct();
                 case 3 -> handleViewCart();
                 case 4 -> handleConfigureDecorators();
-                case 5 -> System.out.println("Checkout execution...");
+                case 5 -> handleCheckout();
                 case 6 -> handleViewObserverStream();
                 case 7 -> handleViewAuditLog();
                 case 8 -> {
@@ -399,6 +405,64 @@ public class EcommerceApp {
                 }
                 case 0 -> decorating = false;
             }
+        }
+    }
+
+    private void handleCheckout() {
+        ConsoleUiHelper.printHeader("Checkout Processing - Facade, Strategy & Adapter Patterns");
+        if (shoppingCart.isEmpty()) {
+            System.out.println("Your cart is empty. Please add items to cart before proceeding to checkout.");
+            return;
+        }
+
+        shoppingCart.printCartSummary();
+
+        // 1. Select Discount Strategy
+        ConsoleUiHelper.printSubHeader("Step 1: Choose Discount Strategy");
+        System.out.println("  1. Customer Loyalty Tier (GOLD Member: 12% off)");
+        System.out.println("  2. Promotional Coupon Code [FALL15] (15% off cart)");
+        System.out.println("  3. Flat Order Coupon [SAVE50] ($50 off over $250)");
+        System.out.println("  4. Buy-One-Get-One-Free (BOGO) paired units");
+        System.out.println("  5. No Promotional Discount");
+
+        int stratChoice = ConsoleUiHelper.promptInt("Select discount strategy", 1, 5);
+        DiscountStrategy strategy = switch (stratChoice) {
+            case 1 -> new TieredLoyaltyDiscountStrategy();
+            case 2 -> new PercentageDiscountStrategy("FALL15", 15.0);
+            case 3 -> new FlatRateDiscountStrategy("SAVE50", 50.0, 250.0);
+            case 4 -> new BuyOneGetOneDiscountStrategy("ALL");
+            default -> new NoDiscountStrategy();
+        };
+
+        // 2. Select Payment Gateway Adapter
+        ConsoleUiHelper.printSubHeader("Step 2: Choose Payment Gateway (Adapter)");
+        System.out.println("  1. Stripe Payment Gateway (Credit/Debit Card via API Adapter)");
+        System.out.println("  2. PayPal Express Checkout (Token Authorization Adapter)");
+        System.out.println("  3. Web3 USDT Settlement Gateway (Decentralized Smart Contract)");
+
+        int payChoice = ConsoleUiHelper.promptInt("Select payment provider", 1, 3);
+        PaymentGateway selectedGateway = paymentGateways.get(payChoice);
+
+        // 3. Confirm & Execute via CheckoutFacade
+        boolean confirm = ConsoleUiHelper.promptBoolean("Proceed to execute unified checkout transaction?");
+        if (!confirm) {
+            System.out.println("Checkout cancelled by customer.");
+            return;
+        }
+
+        try {
+            Order completedOrder = checkoutFacade.processCheckout(
+                    shoppingCart,
+                    currentCustomer,
+                    strategy,
+                    selectedGateway,
+                    configuredOrderItems
+            );
+            orderHistory.add(completedOrder);
+            configuredOrderItems.clear();
+            System.out.println("Order status is now PAID and entered into logistics dispatch queue.");
+        } catch (Exception ex) {
+            System.err.println("Checkout transaction failed: " + ex.getMessage());
         }
     }
 
