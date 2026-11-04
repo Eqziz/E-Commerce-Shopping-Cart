@@ -1,0 +1,62 @@
+@startuml
+skinparam style strictuml
+skinparam sequenceMessageAlign center
+skinparam monochrome true
+
+title Checkout Transaction Sequence Diagram (Inter-Pattern Collaboration)
+
+actor Customer as C
+participant "CheckoutFacade\n(Facade)" as CF
+participant "InventorySubject\n(Observer Subject)" as IS
+participant "DiscountStrategy\n(Strategy)" as DS
+participant "OrderItemDecorator\n(Decorator)" as DC
+participant "PaymentGateway\n(Adapter)" as PG
+participant "Observers\n(Customer/Warehouse/Audit)" as OBS
+participant "Invoice" as INV
+
+C -> CF : processCheckout(cart, customer, discountStrategy, paymentGateway, decoratedItems)
+activate CF
+
+CF -> IS : checkStockAvailability(items)
+activate IS
+IS --> CF : stockConfirmed (all items >= qty)
+deactivate IS
+
+CF -> DC : getTotalPrice() on decorated lines
+activate DC
+DC --> CF : decoratedSubtotal (base + warranty + shipping)
+deactivate DC
+
+CF -> DS : applyDiscount(subtotal, items, customerTier)
+activate DS
+DS --> CF : discountResult (savings, netTotal)
+deactivate DS
+
+CF -> IS : reserveStock(productId, qty)
+activate IS
+IS --> CF : stockReserved
+deactivate IS
+
+CF -> PG : pay(orderId, totalAmount, customerEmail)
+activate PG
+PG --> CF : paymentResult (SUCCESS, txId)
+deactivate PG
+
+CF -> IS : notifyObservers(ORDER_STATUS_CHANGED)
+activate IS
+IS -> OBS : update(EcommerceEvent)
+activate OBS
+OBS --> IS : ack
+deactivate OBS
+IS --> CF : notificationsDispatched
+deactivate IS
+
+CF -> INV : new Invoice(completedOrder).printInvoice()
+activate INV
+INV --> CF : receiptRendered
+deactivate INV
+
+CF --> C : completedOrder (status: PAID)
+deactivate CF
+
+@enduml

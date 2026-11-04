@@ -1,0 +1,148 @@
+@startuml
+skinparam style strictuml
+skinparam classAttributeIconSize 0
+skinparam monochrome true
+
+title E-Commerce Shopping Cart Platform - Complete Class Architecture
+
+' =================== CREATIONAL: FACTORY METHOD ===================
+package "com.ecommerce.factory" {
+    abstract class ProductFactory {
+        + {abstract} createProduct(id, name, desc, price, extraAttrs) : BaseProduct
+        + manufactureAndRegister(id, name, desc, price, extraAttrs) : BaseProduct
+    }
+    class ElectronicsFactory extends ProductFactory
+    class ClothingFactory extends ProductFactory
+    class BookFactory extends ProductFactory
+    class DigitalProductFactory extends ProductFactory
+    class ProductCatalogRegistry {
+        - factoryMap : Map<ProductType, ProductFactory>
+        + registerFactory(type, factory) : void
+        + getFactory(type) : ProductFactory
+        + createProduct(type, id, name, desc, price, extraAttrs) : BaseProduct
+    }
+}
+
+' =================== CREATIONAL: BUILDER ===================
+package "com.ecommerce.builder" {
+    interface ProductBuilder {
+        + reset() : ProductBuilder
+        + setId(id) : ProductBuilder
+        + setName(name) : ProductBuilder
+        + setProcessor(cpu, cost) : ProductBuilder
+        + setMemoryRam(ram, cost) : ProductBuilder
+        + setStorage(ssd, cost) : ProductBuilder
+        + setGraphicsCard(gpu, cost) : ProductBuilder
+        + build() : CustomProduct
+    }
+    class CustomProductBuilder implements ProductBuilder {
+        - id : String
+        - basePrice : double
+        - totalAddonCost : double
+        + build() : CustomProduct
+    }
+    class ProductDirector {
+        + constructGamingPc(builder, id) : CustomProduct
+        + constructStudentWorkstation(builder, id) : CustomProduct
+        + constructLuxuryGiftBundle(builder, id) : CustomProduct
+    }
+    class CustomProduct implements com.ecommerce.model.BaseProduct {
+        - processor : String
+        - memoryRam : String
+        - storage : String
+        - graphicsCard : String
+    }
+}
+
+' =================== BEHAVIORAL: OBSERVER ===================
+package "com.ecommerce.observer" {
+    interface Subject {
+        + attach(observer) : void
+        + detach(observer) : void
+        + notifyObservers(event) : void
+    }
+    interface Observer {
+        + getObserverId() : String
+        + update(event) : void
+    }
+    class InventorySubject implements Subject {
+        - stockLevels : Map<String, Integer>
+        + registerProduct(product, stock) : void
+        + updateStock(productId, qty) : void
+        + updateProductPrice(productId, newPrice) : void
+        + reserveStock(productId, qty) : boolean
+    }
+    class CustomerAlertObserver implements Observer
+    class WarehouseInventoryObserver implements Observer
+    class AnalyticsAuditObserver implements Observer
+}
+
+' =================== BEHAVIORAL: STRATEGY ===================
+package "com.ecommerce.strategy" {
+    interface DiscountStrategy {
+        + getStrategyName() : String
+        + applyDiscount(subtotal, items, tier) : DiscountResult
+    }
+    class PercentageDiscountStrategy implements DiscountStrategy
+    class FlatRateDiscountStrategy implements DiscountStrategy
+    class TieredLoyaltyDiscountStrategy implements DiscountStrategy
+    class BuyOneGetOneDiscountStrategy implements DiscountStrategy
+    class NoDiscountStrategy implements DiscountStrategy
+    class DiscountResult {
+        - discountAmount : double
+        - discountedTotal : double
+    }
+}
+
+' =================== STRUCTURAL: DECORATOR ===================
+package "com.ecommerce.decorator" {
+    interface OrderItem {
+        + getItemId() : String
+        + getName() : String
+        + getPrice() : double
+        + getQuantity() : int
+        + getTotalPrice() : double
+        + getDescription() : String
+    }
+    class StandardOrderItem implements OrderItem
+    abstract class OrderItemDecorator implements OrderItem {
+        # wrappedItem : OrderItem
+    }
+    class GiftWrapDecorator extends OrderItemDecorator
+    class ExtendedWarrantyDecorator extends OrderItemDecorator
+    class ExpressShippingDecorator extends OrderItemDecorator
+    class FragileHandlingDecorator extends OrderItemDecorator
+}
+
+' =================== STRUCTURAL: ADAPTER ===================
+package "com.ecommerce.adapter" {
+    interface PaymentGateway {
+        + getGatewayName() : String
+        + pay(orderId, amount, email) : PaymentResult
+        + refund(txId, amount) : boolean
+    }
+    class StripePaymentAdapter implements PaymentGateway {
+        - stripeService : ExternalStripeService
+    }
+    class PayPalPaymentAdapter implements PaymentGateway {
+        - payPalService : ExternalPayPalService
+    }
+    class CryptoPaymentAdapter implements PaymentGateway
+}
+
+' =================== STRUCTURAL: FACADE & CORE ===================
+package "com.ecommerce.facade" {
+    class CheckoutFacade {
+        - inventory : InventorySubject
+        - defaultPaymentGateway : PaymentGateway
+        + processCheckout(cart, customer, strategy, gateway, decoratedItems) : Order
+    }
+}
+
+CheckoutFacade --> com.ecommerce.observer.InventorySubject : reserves stock
+CheckoutFacade --> com.ecommerce.strategy.DiscountStrategy : applies
+CheckoutFacade --> com.ecommerce.adapter.PaymentGateway : authorizes payment
+CheckoutFacade --> com.ecommerce.decorator.OrderItem : processes lines
+com.ecommerce.cart.ShoppingCart o-- com.ecommerce.model.CartItem
+com.ecommerce.cart.ShoppingCart --> com.ecommerce.strategy.DiscountStrategy
+@enduml
