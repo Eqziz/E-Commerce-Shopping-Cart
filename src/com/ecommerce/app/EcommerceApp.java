@@ -518,4 +518,9 @@ public class EcommerceApp {
             }
         }
     }
+
+    public static void main(String[] args) {
+        EcommerceApp app = new EcommerceApp();
+        app.run();
+    }
 }
