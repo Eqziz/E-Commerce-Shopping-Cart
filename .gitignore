@@ -8,8 +8,9 @@ target/
 *.jar
 *.war
 *.ear
-*.zip
 *.tar.gz
+*.zip
+!ecommerce_shopping_cart_source.zip
 
 # IDE and Editor configurations
 .idea/
