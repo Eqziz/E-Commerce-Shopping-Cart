@@ -520,7 +520,12 @@ public class EcommerceApp {
     }
 
     public static void main(String[] args) {
-        EcommerceApp app = new EcommerceApp();
-        app.run();
+        // Instead of CLI, default to the graphical Swing interface in 'Front-end'
+        if (args.length > 0 && args[0].equalsIgnoreCase("--cli")) {
+            EcommerceApp app = new EcommerceApp();
+            app.run();
+        } else {
+            com.ecommerce.frontend.EcommerceSwingApp.main(args);
+        }
     }
 }
