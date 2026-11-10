@@ -31,5 +31,7 @@ Project_Architecture_Scheme.docx
 Project_Architecture_Scheme.pdf
 generate_report.py
 generate_report*.py
+.agents/
+
 
 

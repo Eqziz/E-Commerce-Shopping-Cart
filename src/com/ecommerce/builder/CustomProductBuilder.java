@@ -1,7 +1,6 @@
 package com.ecommerce.builder;
 
 import com.ecommerce.model.ProductType;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -11,7 +10,7 @@ import java.util.List;
  * 
  * @author Eqziz
  */
-public class CustomProductBuilder implements ProductBuilder {
+public final class CustomProductBuilder implements ProductBuilder {
     private String id;
     private String name;
     private String description;
