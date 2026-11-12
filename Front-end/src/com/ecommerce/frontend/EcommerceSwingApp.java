@@ -19,8 +19,8 @@ import com.ecommerce.factory.ProductCatalogRegistry;
 import com.ecommerce.model.BaseProduct;
 import com.ecommerce.model.CartItem;
 import com.ecommerce.model.Customer;
-import com.ecommerce.model.Invoice;
 import com.ecommerce.model.Order;
+import com.ecommerce.model.OrderStatus;
 import com.ecommerce.model.ProductType;
 import com.ecommerce.observer.AnalyticsAuditObserver;
 import com.ecommerce.observer.CustomerAlertObserver;
@@ -38,7 +38,6 @@ import com.ecommerce.strategy.TieredLoyaltyDiscountStrategy;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
@@ -49,13 +48,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Desktop Graphical User Interface (Java Swing) for the E-Commerce Shopping Cart System.
- * Replaces console CLI with a clean, responsive graphical application illustrating all
- * seven Gang of Four (GoF) design patterns.
- * 
- * Located in the separate 'Front-end' module directory.
+ * Production-grade frontend implementing comprehensive input validation, retro modal dialogs,
+ * asynchronous SwingWorker checkout, line-item decorator resolution fix, cart preservation on error,
+ * and strict adherence to 1990s retro desktop aesthetic invariants (zero emojis).
  */
 public class EcommerceSwingApp extends JFrame implements Observer {
 
@@ -70,6 +69,9 @@ public class EcommerceSwingApp extends JFrame implements Observer {
     private final List<BaseProduct> catalogItems;
     private final Map<String, PaymentGateway> paymentGateways;
     private final CheckoutFacade checkoutFacade;
+
+    // UI Feedback Service (Inversion of Control for Headless Testing)
+    private UiFeedbackService uiFeedbackService;
 
     // Attached Observers
     private final CustomerAlertObserver customerAlertObserver;
@@ -108,17 +110,37 @@ public class EcommerceSwingApp extends JFrame implements Observer {
 
     // Tab 4: Checkout
     private JComboBox<String> discountStrategyCombo;
+    private JTextField promoCodeField;
+    private String activeCustomPromoCode;
     private JComboBox<String> paymentGatewayCombo;
     private JLabel checkoutSubtotalLabel;
     private JLabel checkoutDiscountLabel;
     private JLabel checkoutTotalLabel;
+    private JLabel checkoutStatusLabel;
+    private JButton executeCheckoutBtn;
     private JTextArea invoiceTextArea;
 
     // Tab 5: Observer Monitor
     private JTextArea eventStreamTextArea;
 
     public EcommerceSwingApp() {
+        this(new RetroSwingDialogService());
+    }
+
+    public EcommerceSwingApp(UiFeedbackService feedbackService) {
         super("E-Commerce Shopping Cart Platform — Swing Front-end");
+        this.uiFeedbackService = feedbackService != null ? feedbackService : new RetroSwingDialogService();
+
+        // Register uncaught exception handler on EDT
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            System.err.println("[UNCAUGHT EXCEPTION] Thread " + thread.getName() + ": " + throwable.getMessage());
+            throwable.printStackTrace();
+            SwingUtilities.invokeLater(() -> {
+                uiFeedbackService.showError(this, "System Runtime Exception",
+                        "An unexpected application error occurred in thread [" + thread.getName() + "]:\n" +
+                                throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
+            });
+        });
 
         // 1. Initialize backend models & patterns
         this.catalogRegistry = new ProductCatalogRegistry();
@@ -130,6 +152,7 @@ public class EcommerceSwingApp extends JFrame implements Observer {
                 "nodir@university.edu", "Tashkent, Universitet ko'chasi 4", "GOLD");
         this.configuredOrderItems = new ArrayList<>();
         this.catalogItems = new ArrayList<>();
+        this.activeCustomPromoCode = null;
 
         // 2. Initialize Observers
         this.customerAlertObserver = new CustomerAlertObserver(currentCustomer.getId(),
@@ -336,11 +359,12 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         return panel;
     }
 
-    private void refreshCatalogTable() {
+    public synchronized void refreshCatalogTable() {
+        if (catalogTableModel == null) return;
         catalogTableModel.setRowCount(0);
-        String selectedFilter = (String) categoryFilterCombo.getSelectedItem();
+        String selectedFilter = categoryFilterCombo != null ? (String) categoryFilterCombo.getSelectedItem() : "All Categories";
 
-        for (BaseProduct p : catalogItems) {
+        for (BaseProduct p : new ArrayList<>(catalogItems)) {
             if (selectedFilter != null && !selectedFilter.equals("All Categories")) {
                 if (!p.getProductType().name().equalsIgnoreCase(selectedFilter)) {
                     continue;
@@ -360,48 +384,59 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         }
     }
 
-    private void handleAddSelectedCatalogItemToCart() {
+    public void handleAddSelectedCatalogItemToCart() {
         int selectedRow = catalogTable.getSelectedRow();
         if (selectedRow < 0) {
-            JOptionPane.showMessageDialog(this, "Please select a product from the catalog table.", "No Product Selected", JOptionPane.WARNING_MESSAGE);
+            uiFeedbackService.showWarning(this, "No Product Selected",
+                    "Please select a product from the catalog table.");
             return;
         }
 
         String sku = (String) catalogTableModel.getValueAt(selectedRow, 0);
         BaseProduct product = inventorySubject.getProduct(sku);
         if (product == null) {
-            JOptionPane.showMessageDialog(this, "Product not found: " + sku, "Error", JOptionPane.ERROR_MESSAGE);
+            uiFeedbackService.showError(this, "Product Not Found", "Product not found: " + sku);
             return;
         }
 
         int availableStock = inventorySubject.getStock(sku);
-        int qty = (int) catalogQtySpinner.getValue();
+        int requestedQty = (int) catalogQtySpinner.getValue();
 
-        if (availableStock <= 0) {
-            JOptionPane.showMessageDialog(this, "This product is currently out of stock.", "Out of Stock", JOptionPane.WARNING_MESSAGE);
+        CartItem existing = findCartItem(sku);
+        int currentInCart = existing != null ? existing.getQuantity() : 0;
+
+        FrontendInputValidator.ValidationResult result =
+                FrontendInputValidator.validateCatalogQuantity(requestedQty, currentInCart, availableStock);
+
+        if (!result.isValid()) {
+            uiFeedbackService.showWarning(this, "Stock Allocation Limit", result.getErrorMessage());
             return;
         }
 
-        if (qty > availableStock) {
-            JOptionPane.showMessageDialog(this, "Requested quantity (" + qty + ") exceeds available stock (" + availableStock + ").", "Stock Limit", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-
-        shoppingCart.addItem(product, qty);
+        shoppingCart.addItem(product, requestedQty);
         updateCartBadge();
-        JOptionPane.showMessageDialog(this, "Added " + qty + " x " + product.getName() + " to your cart.", "Cart Updated", JOptionPane.INFORMATION_MESSAGE);
+        uiFeedbackService.showInformation(this, "Cart Updated",
+                "Added " + requestedQty + " x " + product.getName() + " to your cart.");
     }
 
     // =========================================================================
     // TAB 2: CUSTOM PC WORKSHOP (BUILDER PATTERN)
     // =========================================================================
-    private static class ComponentOption {
+    public static class ComponentOption {
         final String name;
         final double price;
 
-        ComponentOption(String name, double price) {
+        public ComponentOption(String name, double price) {
             this.name = name;
             this.price = price;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public double getPrice() {
+            return price;
         }
 
         @Override
@@ -567,7 +602,7 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         }
     }
 
-    private void constructPresetRig(int presetId) {
+    public void constructPresetRig(int presetId) {
         String sku = "CUST-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         CustomProduct preset = switch (presetId) {
             case 1 -> productDirector.constructGamingPc(customProductBuilder, sku);
@@ -581,27 +616,32 @@ public class EcommerceSwingApp extends JFrame implements Observer {
             shoppingCart.addItem(preset, 1);
             refreshCatalogTable();
             updateCartBadge();
-            JOptionPane.showMessageDialog(this,
-                    "Successfully built and added preset:\n" + preset.getName() + " ($" + String.format("%.2f", preset.getPrice()) + ")",
-                    "Director Preset Added", JOptionPane.INFORMATION_MESSAGE);
+            uiFeedbackService.showInformation(this, "Director Preset Added",
+                    "Successfully built and added preset:\n" + preset.getName() + " ($" + String.format("%.2f", preset.getPrice()) + ")");
         }
     }
 
-    private void handleAssembleCustomRig() {
-        String name = customBuildNameField.getText().trim();
-        if (name.isEmpty()) name = "Custom Power Rig";
+    public void handleAssembleCustomRig() {
+        String name = customBuildNameField != null ? customBuildNameField.getText() : "";
+        ComponentOption cpu = cpuCombo != null ? (ComponentOption) cpuCombo.getSelectedItem() : null;
+        ComponentOption ram = ramCombo != null ? (ComponentOption) ramCombo.getSelectedItem() : null;
+        ComponentOption gpu = gpuCombo != null ? (ComponentOption) gpuCombo.getSelectedItem() : null;
+        ComponentOption ssd = ssdCombo != null ? (ComponentOption) ssdCombo.getSelectedItem() : null;
+        ComponentOption os = osCombo != null ? (ComponentOption) osCombo.getSelectedItem() : null;
+
+        FrontendInputValidator.ValidationResult result =
+                FrontendInputValidator.validateCustomRig(name, cpu, ram, gpu, ssd, os);
+
+        if (!result.isValid()) {
+            uiFeedbackService.showWarning(this, "Custom Rig Configuration Error", result.getErrorMessage());
+            return;
+        }
 
         String customSku = "CUST-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
-        ComponentOption cpu = (ComponentOption) cpuCombo.getSelectedItem();
-        ComponentOption ram = (ComponentOption) ramCombo.getSelectedItem();
-        ComponentOption gpu = (ComponentOption) gpuCombo.getSelectedItem();
-        ComponentOption ssd = (ComponentOption) ssdCombo.getSelectedItem();
-        ComponentOption os = (ComponentOption) osCombo.getSelectedItem();
-
         customProductBuilder.reset()
                 .setId(customSku)
-                .setName(name)
+                .setName(name.trim())
                 .setProductType(ProductType.CUSTOM_HARDWARE)
                 .setBasePrice(350.00)
                 .setProcessor(cpu.name, cpu.price)
@@ -619,15 +659,14 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         refreshCatalogTable();
         updateCartBadge();
 
-        JOptionPane.showMessageDialog(this,
-                "Bespoke Rig assembled:\n" + customProduct.getName() + "\nTotal Price: $" + String.format("%.2f", customProduct.getPrice()) + "\nAdded to shopping cart.",
-                "Custom Rig Assembled", JOptionPane.INFORMATION_MESSAGE);
+        uiFeedbackService.showInformation(this, "Custom Rig Assembled",
+                "Bespoke Rig assembled:\n" + customProduct.getName() + "\nTotal Price: $" + String.format("%.2f", customProduct.getPrice()) + "\nAdded to shopping cart.");
     }
 
     // =========================================================================
     // TAB 3: SHOPPING CART & DECORATOR CONFIGURATION (DECORATOR PATTERN)
     // =========================================================================
-    private CartItem findCartItem(String sku) {
+    public CartItem findCartItem(String sku) {
         for (CartItem ci : shoppingCart.getItems()) {
             if (ci.getProduct().getId().equals(sku)) {
                 return ci;
@@ -717,10 +756,19 @@ public class EcommerceSwingApp extends JFrame implements Observer {
 
         JButton clearBtn = new JButton("Clear Cart");
         clearBtn.addActionListener(e -> {
-            shoppingCart.clear();
-            configuredOrderItems.clear();
-            refreshCartTable();
-            updateCartBadge();
+            if (shoppingCart.isEmpty()) {
+                uiFeedbackService.showInformation(this, "Cart Empty", "Your shopping cart is already empty.");
+                return;
+            }
+            boolean confirm = uiFeedbackService.showConfirmation(this, "Clear Shopping Cart",
+                    "Are you sure you want to remove all items and value-added decorator configurations from your cart?");
+            if (confirm) {
+                shoppingCart.clear();
+                configuredOrderItems.clear();
+                refreshCartTable();
+                updateCartBadge();
+                updateCheckoutSummary();
+            }
         });
         leftActions.add(clearBtn);
 
@@ -754,12 +802,32 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         String sku = (String) cartTableModel.getValueAt(selectedRow, 0);
         String name = (String) cartTableModel.getValueAt(selectedRow, 1);
         decoratorTargetLabel.setText("Decorating Selected Item: " + name + " (#" + sku + ")");
+
+        // Restore checkbox states from configured decorators if already present
+        OrderItem configured = configuredOrderItems.stream()
+                .filter(item -> item.getItemId().equals(sku))
+                .findFirst()
+                .orElse(null);
+
+        if (configured != null) {
+            String desc = configured.getDescription();
+            giftWrapCheck.setSelected(desc.contains("[Gift Wrap:"));
+            warrantyCheck.setSelected(desc.contains("Extended Warranty"));
+            expressCheck.setSelected(desc.contains("Express Air Shipping"));
+            fragileCheck.setSelected(desc.contains("Fragile Shock-Proof"));
+        } else {
+            giftWrapCheck.setSelected(false);
+            warrantyCheck.setSelected(false);
+            expressCheck.setSelected(false);
+            fragileCheck.setSelected(false);
+        }
     }
 
-    private void handleApplyDecoratorsToSelectedItem() {
+    public void handleApplyDecoratorsToSelectedItem() {
         int selectedRow = cartTable.getSelectedRow();
         if (selectedRow < 0) {
-            JOptionPane.showMessageDialog(this, "Please select an item in the cart to decorate.", "No Item Selected", JOptionPane.WARNING_MESSAGE);
+            uiFeedbackService.showWarning(this, "No Item Selected",
+                    "Please select an item in the cart to decorate.");
             return;
         }
 
@@ -791,15 +859,16 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         configuredOrderItems.add(decorated);
 
         refreshCartTable();
-        JOptionPane.showMessageDialog(this,
-                "Applied Decorator Services:\n" + decorated.getDescription() + "\nTotal with services: $" + String.format("%.2f", decorated.getTotalPrice()),
-                "Decorators Attached", JOptionPane.INFORMATION_MESSAGE);
+        updateCheckoutSummary();
+        uiFeedbackService.showInformation(this, "Decorators Attached",
+                "Applied Decorator Services:\n" + decorated.getDescription() + "\nTotal with services: $" + String.format("%.2f", decorated.getTotalPrice()));
     }
 
-    private void handleRemoveCartItem() {
+    public void handleRemoveCartItem() {
         int selectedRow = cartTable.getSelectedRow();
         if (selectedRow < 0) {
-            JOptionPane.showMessageDialog(this, "Please select an item to remove.", "Selection Required", JOptionPane.WARNING_MESSAGE);
+            uiFeedbackService.showWarning(this, "Selection Required",
+                    "Please select an item to remove.");
             return;
         }
         String sku = (String) cartTableModel.getValueAt(selectedRow, 0);
@@ -807,9 +876,11 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         configuredOrderItems.removeIf(oi -> oi.getItemId().equals(sku));
         refreshCartTable();
         updateCartBadge();
+        updateCheckoutSummary();
     }
 
-    private void refreshCartTable() {
+    public void refreshCartTable() {
+        if (cartTableModel == null) return;
         cartTableModel.setRowCount(0);
         double grandTotal = 0.0;
 
@@ -834,13 +905,17 @@ public class EcommerceSwingApp extends JFrame implements Observer {
             });
         }
 
-        cartTotalSummaryLabel.setText(String.format("Calculated Subtotal (with Services): $%.2f", grandTotal));
+        if (cartTotalSummaryLabel != null) {
+            cartTotalSummaryLabel.setText(String.format("Calculated Subtotal (with Services): $%.2f", grandTotal));
+        }
         updateCartBadge();
     }
 
     private void updateCartBadge() {
-        statusCartLabel.setText(String.format("Cart: %d items ($%.2f)",
-                shoppingCart.getItemCount(), shoppingCart.calculateSubtotal()));
+        if (statusCartLabel != null) {
+            statusCartLabel.setText(String.format("Cart: %d items ($%.2f)",
+                    shoppingCart.getItemCount(), shoppingCart.calculateSubtotal()));
+        }
     }
 
     // =========================================================================
@@ -882,10 +957,34 @@ public class EcommerceSwingApp extends JFrame implements Observer {
                 "Percentage Coupon [FALL15] (15% off cart)",
                 "Flat Order Coupon [SAVE50] ($50 off over $250)",
                 "Buy-One-Get-One-Free (BOGO Paired Items)",
+                "Custom Promotional Code Entry",
                 "No Promotional Discount"
         });
-        discountStrategyCombo.addActionListener(e -> updateCheckoutSummary());
+        discountStrategyCombo.addActionListener(e -> {
+            int idx = discountStrategyCombo.getSelectedIndex();
+            if (idx == 1 && promoCodeField != null) {
+                promoCodeField.setText("FALL15");
+            } else if (idx == 2 && promoCodeField != null) {
+                promoCodeField.setText("SAVE50");
+            } else if (idx == 3 && promoCodeField != null) {
+                promoCodeField.setText("BOGO");
+            }
+            updateCheckoutSummary();
+        });
         configPanel.add(discountStrategyCombo, gbc);
+
+        // Promo Code Entry Field
+        gbc.gridx = 0; gbc.gridy = row;
+        configPanel.add(new JLabel("Promo Code Entry:"), gbc);
+        gbc.gridx = 1; gbc.gridy = row++;
+        JPanel promoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        promoCodeField = new JTextField("", 10);
+        promoPanel.add(promoCodeField);
+        JButton applyPromoBtn = new JButton("Apply Code");
+        applyPromoBtn.setFont(new Font("SansSerif", Font.BOLD, 11));
+        applyPromoBtn.addActionListener(e -> handleApplyPromoCode());
+        promoPanel.add(applyPromoBtn);
+        configPanel.add(promoPanel, gbc);
 
         // Payment Adapter Selector
         gbc.gridx = 0; gbc.gridy = row;
@@ -920,9 +1019,16 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         checkoutTotalLabel.setForeground(new Color(26, 54, 93));
         configPanel.add(checkoutTotalLabel, gbc);
 
+        // Concurrency / Checkout Status
+        gbc.gridx = 0; gbc.gridy = row++; gbc.gridwidth = 2;
+        checkoutStatusLabel = new JLabel("Status: Ready");
+        checkoutStatusLabel.setFont(new Font("SansSerif", Font.ITALIC, 11));
+        checkoutStatusLabel.setForeground(new Color(74, 85, 104));
+        configPanel.add(checkoutStatusLabel, gbc);
+
         // Checkout Button
         gbc.gridx = 0; gbc.gridy = row++; gbc.gridwidth = 2;
-        JButton executeCheckoutBtn = new JButton("Execute Order Checkout (CheckoutFacade)");
+        executeCheckoutBtn = new JButton("Execute Order Checkout (CheckoutFacade)");
         executeCheckoutBtn.setBackground(new Color(43, 108, 176));
         executeCheckoutBtn.setForeground(Color.BLACK);
         executeCheckoutBtn.setFont(new Font("SansSerif", Font.BOLD, 13));
@@ -946,19 +1052,57 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         return panel;
     }
 
-    private DiscountStrategy getSelectedDiscountStrategy() {
-        int idx = discountStrategyCombo.getSelectedIndex();
+    public void handleApplyPromoCode() {
+        String code = promoCodeField != null ? promoCodeField.getText().trim() : "";
+        if (code.isEmpty()) {
+            uiFeedbackService.showWarning(this, "Promo Code Required",
+                    "Please enter a promotional discount code before clicking Apply.");
+            return;
+        }
+
+        double subtotal = calculateCartSubtotalWithDecorators();
+        FrontendInputValidator.ValidationResult result =
+                FrontendInputValidator.validatePromoCode(code, subtotal);
+
+        if (!result.isValid()) {
+            uiFeedbackService.showWarning(this, "Promo Code Qualification Error", result.getErrorMessage());
+            return;
+        }
+
+        activeCustomPromoCode = code.toUpperCase();
+        discountStrategyCombo.setSelectedIndex(4); // Select "Custom Promotional Code Entry"
+        updateCheckoutSummary();
+        uiFeedbackService.showInformation(this, "Promo Code Applied",
+                "Promotional code '" + activeCustomPromoCode + "' applied successfully to your order!");
+    }
+
+    public DiscountStrategy getSelectedDiscountStrategy() {
+        int idx = discountStrategyCombo != null ? discountStrategyCombo.getSelectedIndex() : 0;
         return switch (idx) {
             case 0 -> new TieredLoyaltyDiscountStrategy();
             case 1 -> new PercentageDiscountStrategy("FALL15", 15.0);
             case 2 -> new FlatRateDiscountStrategy("SAVE50", 50.0, 250.0);
             case 3 -> new BuyOneGetOneDiscountStrategy("ALL");
+            case 4 -> createDiscountStrategyForCode(activeCustomPromoCode);
             default -> new NoDiscountStrategy();
         };
     }
 
-    private PaymentGateway getSelectedPaymentGateway() {
-        int idx = paymentGatewayCombo.getSelectedIndex();
+    private DiscountStrategy createDiscountStrategyForCode(String code) {
+        if (code == null) return new NoDiscountStrategy();
+        String upper = code.trim().toUpperCase();
+        return switch (upper) {
+            case "SAVE10" -> new PercentageDiscountStrategy("SAVE10", 10.0);
+            case "FALL15" -> new PercentageDiscountStrategy("FALL15", 15.0);
+            case "SAVE50" -> new FlatRateDiscountStrategy("SAVE50", 50.0, 250.0);
+            case "BOGO" -> new BuyOneGetOneDiscountStrategy("ALL");
+            case "LOYALTY" -> new TieredLoyaltyDiscountStrategy();
+            default -> new NoDiscountStrategy();
+        };
+    }
+
+    public PaymentGateway getSelectedPaymentGateway() {
+        int idx = paymentGatewayCombo != null ? paymentGatewayCombo.getSelectedIndex() : 0;
         return switch (idx) {
             case 0 -> paymentGateways.get("Stripe");
             case 1 -> paymentGateways.get("PayPal");
@@ -967,15 +1111,12 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         };
     }
 
-    private void updateCheckoutSummary() {
-        if (shoppingCart.isEmpty()) {
-            checkoutSubtotalLabel.setText("$0.00");
-            checkoutDiscountLabel.setText("-$0.00");
-            checkoutTotalLabel.setText("$0.00");
-            return;
-        }
-
-        double subtotal = 0.0;
+    /**
+     * Resolves the full list of OrderItem elements for all items in the shopping cart,
+     * merging custom decorator-wrapped items with StandardOrderItem wrappers for undecorated items.
+     * Fixes the decorator disconnect bug.
+     */
+    public List<OrderItem> resolveFullOrderItems() {
         List<OrderItem> items = new ArrayList<>();
         for (CartItem ci : shoppingCart.getItems()) {
             OrderItem oi = configuredOrderItems.stream()
@@ -983,88 +1124,202 @@ public class EcommerceSwingApp extends JFrame implements Observer {
                     .findFirst()
                     .orElse(new StandardOrderItem(ci));
             items.add(oi);
-            subtotal += oi.getTotalPrice();
         }
-
-        DiscountStrategy strategy = getSelectedDiscountStrategy();
-        DiscountResult discountResult = strategy.applyDiscount(subtotal, shoppingCart.getItems(), currentCustomer.getLoyaltyTier());
-
-        checkoutSubtotalLabel.setText(String.format("$%.2f", subtotal));
-        checkoutDiscountLabel.setText(String.format("-$%.2f (%s)", discountResult.getDiscountAmount(), discountResult.getStrategyName()));
-        checkoutTotalLabel.setText(String.format("$%.2f", discountResult.getDiscountedTotal()));
+        return items;
     }
 
-    private void handleExecuteCheckout() {
+    public double calculateCartSubtotalWithDecorators() {
+        double subtotal = 0.0;
+        for (OrderItem oi : resolveFullOrderItems()) {
+            subtotal += oi.getTotalPrice();
+        }
+        return subtotal;
+    }
+
+    public void updateCheckoutSummary() {
         if (shoppingCart.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Your cart is empty! Please add items before checking out.", "Empty Cart", JOptionPane.WARNING_MESSAGE);
+            if (checkoutSubtotalLabel != null) checkoutSubtotalLabel.setText("$0.00");
+            if (checkoutDiscountLabel != null) checkoutDiscountLabel.setText("-$0.00");
+            if (checkoutTotalLabel != null) checkoutTotalLabel.setText("$0.00");
             return;
         }
 
+        double subtotal = calculateCartSubtotalWithDecorators();
         DiscountStrategy strategy = getSelectedDiscountStrategy();
-        PaymentGateway gateway = getSelectedPaymentGateway();
 
-        try {
-            Order completedOrder = checkoutFacade.processCheckout(
-                    shoppingCart,
-                    currentCustomer,
-                    strategy,
-                    gateway,
-                    configuredOrderItems
-            );
-
-            // Display invoice
-            StringBuilder sb = new StringBuilder();
-            sb.append("================================================================================\n");
-            sb.append("                       COMMERCIAL ORDER INVOICE & RECEIPT                       \n");
-            sb.append("================================================================================\n");
-            sb.append(String.format("Order Reference:   %s%n", completedOrder.getOrderId()));
-            sb.append(String.format("Issued Date:       %s%n", completedOrder.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))));
-            sb.append(String.format("Customer:          %s (%s)%n", currentCustomer.getFullName(), currentCustomer.getEmail()));
-            sb.append(String.format("Shipping Address:  %s%n", currentCustomer.getShippingAddress()));
-            sb.append(String.format("Loyalty Tier:      %s%n", currentCustomer.getLoyaltyTier()));
-            sb.append("--------------------------------------------------------------------------------\n");
-            sb.append("LINE ITEMS (WITH VALUE-ADDED DECORATORS):\n");
-            int i = 1;
-            for (OrderItem oi : completedOrder.getItems()) {
-                sb.append(String.format("  %d. %s%n", i++, oi.getDescription()));
-                sb.append(String.format("     Qty: %d | Unit Price: $%.2f | Line Total: $%.2f%n",
-                        oi.getQuantity(), oi.getPrice(), oi.getTotalPrice()));
-            }
-            sb.append("--------------------------------------------------------------------------------\n");
-            sb.append(String.format("Gross Subtotal:     $%10.2f%n", completedOrder.getSubtotal()));
-            if (completedOrder.getDiscountResult() != null) {
-                sb.append(String.format("Promotional Rebate: -$%10.2f (%s)%n",
-                        completedOrder.getDiscountResult().getDiscountAmount(),
-                        completedOrder.getDiscountResult().getStrategyName()));
-            }
-            sb.append(String.format("Sales Tax (8.5%%):   $%10.2f%n", completedOrder.getTaxAmount()));
-            sb.append(String.format("NET TOTAL PAID:     $%10.2f%n", completedOrder.getTotalAmount()));
-            sb.append("--------------------------------------------------------------------------------\n");
-            if (completedOrder.getPaymentResult() != null) {
-                sb.append(String.format("Payment Provider:   %s (Adapter)%n", completedOrder.getPaymentResult().getPaymentMethod()));
-                sb.append(String.format("Transaction ID:     %s%n", completedOrder.getPaymentResult().getTransactionId()));
-                sb.append(String.format("Payment Status:     %s | Auth: APPROVED-2026%n", completedOrder.getPaymentResult().isSuccessful() ? "CONFIRMED" : "REJECTED"));
-            }
-            sb.append("================================================================================\n");
-
-            invoiceTextArea.setText(sb.toString());
-
-            // Reset cart
-            configuredOrderItems.clear();
-            refreshCartTable();
-            refreshCatalogTable();
-            updateCartBadge();
-            updateCheckoutSummary();
-
-            JOptionPane.showMessageDialog(this,
-                    "Order #" + completedOrder.getOrderId() + " successfully paid and completed via " + gateway.getGatewayName() + "!",
-                    "Checkout Success", JOptionPane.INFORMATION_MESSAGE);
-
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this,
-                    "Checkout transaction failed:\n" + ex.getMessage(),
-                    "Transaction Error", JOptionPane.ERROR_MESSAGE);
+        // Check if FlatRate SAVE50 threshold warning is needed
+        if (strategy instanceof FlatRateDiscountStrategy && subtotal < 250.00) {
+            if (checkoutSubtotalLabel != null) checkoutSubtotalLabel.setText(String.format("$%.2f", subtotal));
+            if (checkoutDiscountLabel != null) checkoutDiscountLabel.setText("-$0.00 (Threshold $250 not met)");
+            if (checkoutTotalLabel != null) checkoutTotalLabel.setText(String.format("$%.2f", subtotal));
+            return;
         }
+
+        DiscountResult discountResult = strategy.applyDiscount(subtotal, shoppingCart.getItems(), currentCustomer.getLoyaltyTier());
+
+        if (checkoutSubtotalLabel != null) checkoutSubtotalLabel.setText(String.format("$%.2f", subtotal));
+        if (checkoutDiscountLabel != null) checkoutDiscountLabel.setText(String.format("-$%.2f (%s)", discountResult.getDiscountAmount(), discountResult.getStrategyName()));
+        if (checkoutTotalLabel != null) checkoutTotalLabel.setText(String.format("$%.2f", discountResult.getDiscountedTotal()));
+    }
+
+    /**
+     * Executes order checkout asynchronously via SwingWorker to avoid freezing the Event Dispatch Thread (EDT).
+     * Collects and validates payment credentials, resolves full line items, preserves cart on failure,
+     * and clears cart only on confirmed PAID status.
+     */
+    public void handleExecuteCheckout() {
+        if (shoppingCart.isEmpty()) {
+            uiFeedbackService.showWarning(this, "Empty Cart",
+                    "Your cart is empty! Please add items before checking out.");
+            return;
+        }
+
+        // 1. Validate promo code threshold before requesting payment
+        double subtotal = calculateCartSubtotalWithDecorators();
+        DiscountStrategy strategy = getSelectedDiscountStrategy();
+        if (strategy instanceof FlatRateDiscountStrategy) {
+            FrontendInputValidator.ValidationResult promoResult =
+                    FrontendInputValidator.validatePromoCode("SAVE50", subtotal);
+            if (!promoResult.isValid()) {
+                uiFeedbackService.showWarning(this, "Promotional Spend Threshold Not Met",
+                        promoResult.getErrorMessage());
+                return;
+            }
+        }
+
+        // 2. Collect interactive payment credentials
+        PaymentGateway gateway = getSelectedPaymentGateway();
+        PaymentCredentialsDialog.PaymentCredentials credentials =
+                PaymentCredentialsDialog.showDialog(
+                        this,
+                        gateway.getGatewayName(),
+                        currentCustomer.getFullName(),
+                        currentCustomer.getEmail(),
+                        uiFeedbackService
+                );
+
+        if (credentials == null || !credentials.isConfirmed()) {
+            // Cancelled by user. Preserve cart and decorator configurations intact!
+            uiFeedbackService.showInformation(this, "Checkout Cancelled",
+                    "Checkout was cancelled by user. Cart contents and decorator configurations have been preserved.");
+            return;
+        }
+
+        // 3. Compile full order items (fixing undecorated item omit bug)
+        List<OrderItem> fullOrderItems = resolveFullOrderItems();
+
+        // 4. Concurrency lock UI controls & show retro progress indicator
+        if (executeCheckoutBtn != null) executeCheckoutBtn.setEnabled(false);
+        setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        if (checkoutStatusLabel != null) {
+            checkoutStatusLabel.setText("Processing payment with " + gateway.getGatewayName() + "...");
+        }
+
+        // 5. Asynchronous SwingWorker execution off-EDT
+        SwingWorker<Order, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Order doInBackground() throws Exception {
+                // Assert running off-EDT for concurrency safety
+                if (SwingUtilities.isEventDispatchThread()) {
+                    System.err.println("[WARNING] Background checkout execution erroneously running on EDT!");
+                }
+                return checkoutFacade.processCheckout(
+                        shoppingCart,
+                        currentCustomer,
+                        strategy,
+                        gateway,
+                        fullOrderItems
+                );
+            }
+
+            @Override
+            protected void done() {
+                // Executed strictly on EDT
+                try {
+                    Order completedOrder = get();
+
+                    if (completedOrder != null && completedOrder.getStatus() == OrderStatus.PAID) {
+                        // Display generated invoice
+                        if (invoiceTextArea != null) {
+                            invoiceTextArea.setText(formatInvoiceText(completedOrder));
+                        }
+
+                        // Clear cart decorators and items upon successful purchase
+                        configuredOrderItems.clear();
+                        refreshCartTable();
+                        refreshCatalogTable();
+                        updateCartBadge();
+                        updateCheckoutSummary();
+
+                        uiFeedbackService.showInformation(EcommerceSwingApp.this, "Checkout Success",
+                                "Order #" + completedOrder.getOrderId() + " successfully authorized and paid via " +
+                                        gateway.getGatewayName() + "!");
+                    } else {
+                        // Payment was not approved or cancelled - preserve cart!
+                        refreshCartTable();
+                        updateCartBadge();
+                        updateCheckoutSummary();
+                        uiFeedbackService.showError(EcommerceSwingApp.this, "Payment Authorization Rejected",
+                                "The payment provider declined the transaction. Your shopping cart has been preserved.");
+                    }
+                } catch (InterruptedException | ExecutionException ex) {
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    // PRESERVE CART ON TRANSACTION FAILURE
+                    refreshCartTable();
+                    updateCartBadge();
+                    updateCheckoutSummary();
+
+                    uiFeedbackService.showError(EcommerceSwingApp.this, "Transaction Error",
+                            "Checkout transaction failed:\n" + cause.getMessage() +
+                                    "\n\nYour shopping cart contents have been preserved.");
+                } finally {
+                    if (executeCheckoutBtn != null) executeCheckoutBtn.setEnabled(true);
+                    setCursor(Cursor.getDefaultCursor());
+                    if (checkoutStatusLabel != null) {
+                        checkoutStatusLabel.setText("Status: Ready");
+                    }
+                }
+            }
+        };
+
+        worker.execute();
+    }
+
+    private String formatInvoiceText(Order completedOrder) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("================================================================================\n");
+        sb.append("                       COMMERCIAL ORDER INVOICE & RECEIPT                       \n");
+        sb.append("================================================================================\n");
+        sb.append(String.format("Order Reference:   %s%n", completedOrder.getOrderId()));
+        sb.append(String.format("Issued Date:       %s%n", completedOrder.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))));
+        sb.append(String.format("Customer:          %s (%s)%n", currentCustomer.getFullName(), currentCustomer.getEmail()));
+        sb.append(String.format("Shipping Address:  %s%n", currentCustomer.getShippingAddress()));
+        sb.append(String.format("Loyalty Tier:      %s%n", currentCustomer.getLoyaltyTier()));
+        sb.append("--------------------------------------------------------------------------------\n");
+        sb.append("LINE ITEMS (WITH VALUE-ADDED DECORATORS):\n");
+        int i = 1;
+        for (OrderItem oi : completedOrder.getItems()) {
+            sb.append(String.format("  %d. %s%n", i++, oi.getDescription()));
+            sb.append(String.format("     Qty: %d | Unit Price: $%.2f | Line Total: $%.2f%n",
+                    oi.getQuantity(), oi.getPrice(), oi.getTotalPrice()));
+        }
+        sb.append("--------------------------------------------------------------------------------\n");
+        sb.append(String.format("Gross Subtotal:     $%10.2f%n", completedOrder.getSubtotal()));
+        if (completedOrder.getDiscountResult() != null) {
+            sb.append(String.format("Promotional Rebate: -$%10.2f (%s)%n",
+                    completedOrder.getDiscountResult().getDiscountAmount(),
+                    completedOrder.getDiscountResult().getStrategyName()));
+        }
+        sb.append(String.format("Sales Tax (8.5%%):   $%10.2f%n", completedOrder.getTaxAmount()));
+        sb.append(String.format("NET TOTAL PAID:     $%10.2f%n", completedOrder.getTotalAmount()));
+        sb.append("--------------------------------------------------------------------------------\n");
+        if (completedOrder.getPaymentResult() != null) {
+            sb.append(String.format("Payment Provider:   %s (Adapter)%n", completedOrder.getPaymentResult().getPaymentMethod()));
+            sb.append(String.format("Transaction ID:     %s%n", completedOrder.getPaymentResult().getTransactionId()));
+            sb.append(String.format("Payment Status:     %s | Auth: APPROVED-2026%n", completedOrder.getPaymentResult().isSuccessful() ? "CONFIRMED" : "REJECTED"));
+        }
+        sb.append("================================================================================\n");
+        return sb.toString();
     }
 
     // =========================================================================
@@ -1109,7 +1364,9 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         btnPanel.add(restockBtn);
 
         JButton clearLogBtn = new JButton("Clear Log");
-        clearLogBtn.addActionListener(e -> eventStreamTextArea.setText(""));
+        clearLogBtn.addActionListener(e -> {
+            if (eventStreamTextArea != null) eventStreamTextArea.setText("");
+        });
         btnPanel.add(clearLogBtn);
 
         topPanel.add(btnPanel, BorderLayout.SOUTH);
@@ -1152,6 +1409,71 @@ public class EcommerceSwingApp extends JFrame implements Observer {
         });
     }
 
+    // Getters and Setters for Headless Testing and Verification
+    public UiFeedbackService getUiFeedbackService() {
+        return uiFeedbackService;
+    }
+
+    public void setUiFeedbackService(UiFeedbackService uiFeedbackService) {
+        this.uiFeedbackService = uiFeedbackService != null ? uiFeedbackService : new RetroSwingDialogService();
+    }
+
+    public ShoppingCart getShoppingCart() {
+        return shoppingCart;
+    }
+
+    public Customer getCurrentCustomer() {
+        return currentCustomer;
+    }
+
+    public InventorySubject getInventorySubject() {
+        return inventorySubject;
+    }
+
+    public CheckoutFacade getCheckoutFacade() {
+        return checkoutFacade;
+    }
+
+    public List<OrderItem> getConfiguredOrderItems() {
+        return configuredOrderItems;
+    }
+
+    public List<BaseProduct> getCatalogItems() {
+        return catalogItems;
+    }
+
+    public JTable getCatalogTable() {
+        return catalogTable;
+    }
+
+    public JSpinner getCatalogQtySpinner() {
+        return catalogQtySpinner;
+    }
+
+    public JTable getCartTable() {
+        return cartTable;
+    }
+
+    public JTextField getPromoCodeField() {
+        return promoCodeField;
+    }
+
+    public JComboBox<String> getDiscountStrategyCombo() {
+        return discountStrategyCombo;
+    }
+
+    public JComboBox<String> getPaymentGatewayCombo() {
+        return paymentGatewayCombo;
+    }
+
+    public JTextField getCustomBuildNameField() {
+        return customBuildNameField;
+    }
+
+    public JTextArea getInvoiceTextArea() {
+        return invoiceTextArea;
+    }
+
     // =========================================================================
     // MAIN ENTRY POINT
     // =========================================================================
@@ -1161,6 +1483,17 @@ public class EcommerceSwingApp extends JFrame implements Observer {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (Exception ignored) {
         }
+
+        // Register default uncaught exception handler
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            System.err.println("[UNCAUGHT EXCEPTION] Thread: " + thread.getName() + " -> " + throwable.getMessage());
+            throwable.printStackTrace();
+            SwingUtilities.invokeLater(() -> {
+                new RetroSwingDialogService().showError(null, "System Runtime Exception",
+                        "An unhandled application error occurred in thread [" + thread.getName() + "]:\n" +
+                                throwable.getClass().getSimpleName() + ": " + throwable.getMessage());
+            });
+        });
 
         SwingUtilities.invokeLater(() -> {
             EcommerceSwingApp app = new EcommerceSwingApp();

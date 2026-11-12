@@ -1,7 +1,7 @@
 package com.ecommerce.test;
 
 /**
- * Master test suite runner executing all design pattern verification test cases.
+ * Master test suite runner executing all design pattern and frontend verification test cases.
  * 
  * @author baktiyarovamereilim-lang
  */
@@ -22,7 +22,8 @@ public class TestSuiteRunner {
                 StrategyPatternTest::runTests,
                 DecoratorPatternTest::runTests,
                 AdapterPatternTest::runTests,
-                FacadePatternTest::runTests
+                FacadePatternTest::runTests,
+                FrontendLogicTest::runTests
         };
 
         for (Runnable test : testSuites) {
